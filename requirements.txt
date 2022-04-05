@@ -1,0 +1,6 @@
+transformers
+datasets
+nltk
+rouge_score
+fairscale
+deepspeed
