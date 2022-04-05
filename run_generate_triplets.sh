@@ -10,7 +10,7 @@ dt=$(date '+%d.%m.%Y_%H.%M.%S')
 
 mkdir $model_dir
 cp ./run_generate_triplets.sh $model_dir/run_generate_triplets.sh_$dt
-cp .run_summarization_predict.py $model_dir/run_summarization_predict.py_$dt
+cp ./run_summarization_predict.py $model_dir/run_summarization_predict.py_$dt
 
 for set in train dev test
 do

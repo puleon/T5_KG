@@ -19,7 +19,7 @@ python ./run_summarization.py \
                 --text_column input \
                 --summary_column label \
                 --train_file ./data/trex_json/train.json \
-                --validation_file /data/trex_json/dev.json \
+                --validation_file ./data/trex_json/dev.json \
                 --preprocessing_num_workers 20 \
                 --max_source_length 256 \
                 --max_target_length 64 \
