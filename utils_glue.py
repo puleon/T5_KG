@@ -267,53 +267,36 @@ relations = ['per:siblings', 'per:parents', 'org:member_of', 'per:origin', 'per:
              'per:country_of_death', 'per:charges', 'org:city_of_headquarters', 'per:spouse']
 
 
-class TACREDProcessor(DataProcessor):
-    def get_train_examples(self, data_dir, dataset_type, negative_sample):
+class RelationClassificationProcessor(DataProcessor):
+    def get_train_examples(self, data_dir, dataset_type):
         """See base class."""
         return self._create_examples(
-            self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))), dataset_type, negative_sample)
+            self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))), dataset_type)
 
-    def get_dev_examples(self, data_dir, dataset_type, negative_sample):
+    def get_dev_examples(self, data_dir, dataset_type):
         """See base class."""
         return self._create_examples(
-            self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))), dataset_type, negative_sample)
+            self._read_json(os.path.join(data_dir, "{}.json".format(dataset_type))), dataset_type)
 
     def get_labels(self):
         """See base class."""
         # return ["0", "1"]
         return relations
 
-    def _create_examples(self, lines, dataset_type, negative_sample):
+    def _create_examples(self, lines, dataset_type):
         """Creates examples for the training and dev sets."""
         examples = []
-        no_relation_number = negative_sample
         for (i, line) in enumerate(lines):
             guid = i
             # text_a: tokenized words
-            text_a = line['token']
+            text_a = line['text']
             # text_b: other information
-            text_b = (line['subj_start'], line['subj_end'], line['obj_start'], line['obj_end'])
-            label = line['relation']
-            if label == 'no_relation' and dataset_type == 'train':
-                no_relation_number -= 1
-                if no_relation_number > 0:
-                    examples.append(
-                        InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
-                else:
-                    continue
-            else:
-                examples.append(
-                    InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+            text_b = (line['ents'][0][1], line['ents'][0][2], line['ents'][1][1], line['ents'][1][2])
+            label = line['label']
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
 
         return examples
-
-
-def read_wikidata_relations(data_dir):
-    with open(os.path.join(data_dir, 'wikidata_relations.json')) as f:
-        wikidata_relations = json.load(f)
-    
-    wikidata_relations = {el[0]: el[1] for el in wikidata_relations['rows']}
-    return wikidata_relations
 
 
 def convert_to_t5_examples_trex(examples, relations=None):
@@ -423,19 +406,7 @@ def convert_to_t5_examples_with_triplets_et(examples, triplets, relations=None):
     return t5_examples
 
 
-def convert_to_t5_examples_tacred(examples, label_list, max_seq_length,
-                                        tokenizer, output_mode,
-                                        cls_token_at_end=False,
-                                        cls_token='[CLS]',
-                                        cls_token_segment_id=1,
-                                        sep_token='[SEP]',
-                                        sep_token_extra=False,
-                                        pad_on_left=False,
-                                        pad_token=0,
-                                        pad_token_segment_id=0,
-                                        sequence_a_segment_id=0,
-                                        sequence_b_segment_id=1,
-                                        mask_padding_with_zero=True):
+def convert_to_t5_examples_rc(examples, relations=None):
     """ Loads a data file into a list of `InputBatch`s
         `cls_token_at_end` define the location of the CLS token:
             - False (Default, BERT/XLM pattern): [CLS] + A + [SEP] + B + [SEP]
@@ -443,114 +414,60 @@ def convert_to_t5_examples_tacred(examples, label_list, max_seq_length,
         `cls_token_segment_id` define the segment id associated to the CLS token (0 for BERT, 2 for XLNet)
     """
 
-    label_map = {label: i for i, label in enumerate(label_list)}
+    # label_map = {label: i for i, label in enumerate(label_list)}
 
-    features = []
+    t5_examples = []
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
         text_a = example.text_a
         subj_start, subj_end, obj_start, obj_end = example.text_b
-        relation = example.label
+        labels = relations[example.label]
+        
         if subj_start < obj_start:
-            tokens = tokenizer.tokenize(' '.join(text_a[:subj_start]))
-            subj_special_start = len(tokens)
-            tokens += ['@']
-            tokens += tokenizer.tokenize(' '.join(text_a[subj_start:subj_end + 1]))
-            tokens += ['@']
-            tokens += tokenizer.tokenize(' '.join(text_a[subj_end + 1:obj_start]))
-            obj_special_start = len(tokens)
-            tokens += ['#']
-            tokens += tokenizer.tokenize(' '.join(text_a[obj_start:obj_end + 1]))
-            tokens += ['#']
-            tokens += tokenizer.tokenize(' '.join(text_a[obj_end + 1:]))
+            inputs = text_a[:subj_start] + '<extra_id_0>' + text_a[subj_start:subj_end] + '<extra_id_1>' + \
+                text_a[subj_end:obj_start] + '<extra_id_2>' + text_a[obj_start:obj_end] + '<extra_id_3>' + \
+                    text_a[obj_end:]
         else:
-            tokens = tokenizer.tokenize(' '.join(text_a[:obj_start]))
-            obj_special_start = len(tokens)
-            tokens += ['#']
-            tokens += tokenizer.tokenize(' '.join(text_a[obj_start:obj_end + 1]))
-            tokens += ['#']
-            tokens += tokenizer.tokenize(' '.join(text_a[obj_end + 1:subj_start]))
-            subj_special_start = len(tokens)
-            tokens += ['@']
-            tokens += tokenizer.tokenize(' '.join(text_a[subj_start:subj_end + 1]))
-            tokens += ['@']
-            tokens += tokenizer.tokenize(' '.join(text_a[subj_end + 1:]))
-
-        _truncate_seq_pair(tokens, [], max_seq_length - 2)
-        tokens = ['<s>'] + tokens + ['</s>']
-        subj_special_start += 1
-        obj_special_start += 1
-        relation = label_map[example.label]
-
-        segment_ids = [sequence_a_segment_id] * len(tokens)
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
-        # The mask has 1 for real tokens and 0 for padding tokens. Only real
-        # tokens are attended to.
-        input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
-
-        # Zero-pad up to the sequence length.
-        padding_length = max_seq_length - len(input_ids)
-        if pad_on_left:
-            input_ids = ([pad_token] * padding_length) + input_ids
-            input_mask = ([0 if mask_padding_with_zero else 1] * padding_length) + input_mask
-            segment_ids = ([pad_token_segment_id] * padding_length) + segment_ids
-        else:
-            input_ids = input_ids + ([pad_token] * padding_length)
-            input_mask = input_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
-            segment_ids = segment_ids + ([pad_token_segment_id] * padding_length)
-        assert len(input_ids) == max_seq_length
-        assert len(input_mask) == max_seq_length
-        assert len(segment_ids) == max_seq_length
-
-        if output_mode == "classification":
-            label_id = label_map[example.label]
-        elif output_mode == "regression":
-            label_id = float(label_map[example.label])
-        else:
-            raise KeyError(output_mode)
+            inputs = text_a[:obj_start] + '<extra_id_2>' + text_a[obj_start:obj_end] + '<extra_id_3>' + \
+                text_a[obj_end:subj_start] + '<extra_id_0>' + text_a[subj_start:subj_end] + '<extra_id_1>' + \
+                    text_a[subj_end:]
 
         if ex_index < 5:
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join(
-                [str(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: {}".format(label_id))
+            logger.info("input: %s" % inputs)
+            logger.info("label: %s" % labels)
+        t5_examples.append({'input': inputs, 'label': labels})
 
-        if subj_special_start > max_seq_length:
-            subj_special_start = max_seq_length - 10
-        if obj_special_start > max_seq_length:
-            obj_special_start = max_seq_length - 10
+    return t5_examples
 
-        subj_special_start_id = np.zeros(max_seq_length)
-        obj_special_start_id = np.zeros(max_seq_length)
-        subj_special_start_id[subj_special_start] = 1
-        obj_special_start_id[obj_special_start] = 1
 
-        features.append(
-            tacredInputFeatures(input_ids=input_ids,
-                                input_mask=input_mask,
-                                segment_ids=segment_ids,
-                                label_id=label_id,
-                                subj_special_start_id=subj_special_start_id,
-                                obj_special_start_id=obj_special_start_id))
-    return features
+def convert_to_t5_examples_with_triplets_rc(examples, relations=None):
+    return convert_to_t5_examples_rc(examples, relations)
 
 
 processors = {
     "trex": TREXProcessor,
     "openentity": EntityTypeProcessor,
     "figer": EntityTypeProcessor,
-    "tacred": TACREDProcessor,
+    "tacred": RelationClassificationProcessor,
+    "fewrel": RelationClassificationProcessor,
 }
 
 preprocessor_functions = {
     "trex": convert_to_t5_examples_trex,
+    "openentity": convert_to_t5_examples_et,
+    "figer": convert_to_t5_examples_et,
+    "tacred": convert_to_t5_examples_rc,
+    "fewrel": convert_to_t5_examples_rc
+}
+
+preprocessor_functions_with_triplets = {
+    "trex": convert_to_t5_examples_trex,
     "openentity": convert_to_t5_examples_with_triplets_et,
     "figer": convert_to_t5_examples_with_triplets_et,
-    "tacred": convert_to_t5_examples_tacred
+    "tacred": convert_to_t5_examples_with_triplets_rc,
+    "fewrel": convert_to_t5_examples_with_triplets_rc
 }

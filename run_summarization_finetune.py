@@ -133,9 +133,15 @@ class DataTrainingArguments:
     """
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
-
-    generated_predictions_file: Optional[str] = field(
-        default="generated_predictions.txt", metadata={"help": "The input training data file (a jsonlines or csv file)."}
+    task_name: str = field(
+        default="openentity",
+        metadata={"help": "The name of the task to train selected in the list: 'openentity', 'figer'"},
+    )
+    labels_file: str = field(
+        default=None,
+        metadata={
+            "help": "A file with labels names."
+        },
     )
     lang: str = field(default=None, metadata={"help": "Language id for summarization."})
 
@@ -282,42 +288,41 @@ summarization_name_mapping = {
     "wiki_summary": ("article", "highlights"),
 }
 
+
 def load_weights(args, trainer, resume_from_checkpoint):
-    # Load potential model checkpoint
-    if isinstance(resume_from_checkpoint, bool) and resume_from_checkpoint:
-        resume_from_checkpoint = get_last_checkpoint(args.output_dir)
-        if resume_from_checkpoint is None:
-            raise ValueError(f"No valid checkpoint found in output directory ({args.output_dir})")
+            # Load potential model checkpoint
+        if isinstance(resume_from_checkpoint, bool) and resume_from_checkpoint:
+            resume_from_checkpoint = get_last_checkpoint(args.output_dir)
+            if resume_from_checkpoint is None:
+                raise ValueError(f"No valid checkpoint found in output directory ({args.output_dir})")
 
-    if resume_from_checkpoint is not None:
-        if not os.path.isfile(os.path.join(resume_from_checkpoint, "pytorch_model.bin")):
-            raise ValueError(f"Can't find a valid checkpoint at {resume_from_checkpoint}")
+        if resume_from_checkpoint is not None:
+            if not os.path.isfile(os.path.join(resume_from_checkpoint, "pytorch_model.bin")):
+                raise ValueError(f"Can't find a valid checkpoint at {resume_from_checkpoint}")
 
-        logger.info(f"Loading model from {resume_from_checkpoint}).")
+            logger.info(f"Loading model from {resume_from_checkpoint}).")
 
-        if os.path.isfile(os.path.join(resume_from_checkpoint, "config.json")):
-            config = PretrainedConfig.from_json_file(os.path.join(resume_from_checkpoint, "config.json"))
-            checkpoint_version = config.transformers_version
-            if checkpoint_version is not None and checkpoint_version != __version__:
-                logger.warning(
-                    f"You are resuming training from a checkpoint trained with {checkpoint_version} of "
-                    f"Transformers but your current version is {__version__}. This is not recommended and could "
-                    "yield to errors or unwanted behaviors."
-                )
+            if os.path.isfile(os.path.join(resume_from_checkpoint, "config.json")):
+                config = PretrainedConfig.from_json_file(os.path.join(resume_from_checkpoint, "config.json"))
+                checkpoint_version = config.transformers_version
+                if checkpoint_version is not None and checkpoint_version != __version__:
+                    logger.warning(
+                        f"You are resuming training from a checkpoint trained with {checkpoint_version} of "
+                        f"Transformers but your current version is {__version__}. This is not recommended and could "
+                        "yield to errors or unwanted behaviors."
+                    )
 
-        if args.deepspeed:
-            # will be resumed in deepspeed_init
-            pass
-        else:
-            # We load the model state dict on the CPU to avoid an OOM error.
-            state_dict = torch.load(os.path.join(resume_from_checkpoint, "pytorch_model.bin"), map_location="cpu")
-            # If the model is on the GPU, it still works!
-            trainer._load_state_dict_in_model(state_dict)
+            if args.deepspeed:
+                # will be resumed in deepspeed_init
+                pass
+            else:
+                # We load the model state dict on the CPU to avoid an OOM error.
+                state_dict = torch.load(os.path.join(resume_from_checkpoint, "pytorch_model.bin"), map_location="cpu")
+                # If the model is on the GPU, it still works!
+                trainer._load_state_dict_in_model(state_dict)
 
-            # release memory
-            del state_dict
-
-
+                # release memory
+                del state_dict
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -472,7 +477,11 @@ def main():
 
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
-    if training_args.do_predict:
+    if training_args.do_train:
+        column_names = raw_datasets["train"].column_names
+    elif training_args.do_eval:
+        column_names = raw_datasets["validation"].column_names
+    elif training_args.do_predict:
         column_names = raw_datasets["test"].column_names
     else:
         logger.info("There is nothing to do. Please pass `do_train`, `do_eval` and/or `do_predict`.")
@@ -548,6 +557,39 @@ def main():
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
 
+    if training_args.do_train:
+        if "train" not in raw_datasets:
+            raise ValueError("--do_train requires a train dataset")
+        train_dataset = raw_datasets["train"]
+        if data_args.max_train_samples is not None:
+            train_dataset = train_dataset.select(range(data_args.max_train_samples))
+        with training_args.main_process_first(desc="train dataset map pre-processing"):
+            train_dataset = train_dataset.map(
+                preprocess_function,
+                batched=True,
+                num_proc=data_args.preprocessing_num_workers,
+                remove_columns=column_names,
+                load_from_cache_file=not data_args.overwrite_cache,
+                desc="Running tokenizer on train dataset",
+            )
+
+    if training_args.do_eval:
+        max_target_length = data_args.val_max_target_length
+        if "validation" not in raw_datasets:
+            raise ValueError("--do_eval requires a validation dataset")
+        eval_dataset = raw_datasets["validation"]
+        if data_args.max_eval_samples is not None:
+            eval_dataset = eval_dataset.select(range(data_args.max_eval_samples))
+        with training_args.main_process_first(desc="validation dataset map pre-processing"):
+            eval_dataset = eval_dataset.map(
+                preprocess_function,
+                batched=True,
+                num_proc=data_args.preprocessing_num_workers,
+                remove_columns=column_names,
+                load_from_cache_file=not data_args.overwrite_cache,
+                desc="Running tokenizer on validation dataset",
+            )
+
     if training_args.do_predict:
         max_target_length = data_args.val_max_target_length
         if "test" not in raw_datasets:
@@ -575,19 +617,52 @@ def main():
     )
 
     # Metric
-    metric = load_metric("rouge")
-    # metric = load_metric("sacrebleu")
+    metrics_list = []
+    if data_args.task_name == 'openentity':
+        metrics_list.append((load_metric('precision', config_name='multilabel'), 'micro'))
+        metrics_list.append((load_metric('recall', config_name='multilabel'), 'micro'))
+        metrics_list.append((load_metric('f1', config_name='multilabel'), 'micro'))
+    elif  data_args.task_name == 'figer':
+        metrics_list.append((load_metric('./custom_accuracy', config_name='multilabel'), None))
+        metrics_list.append((load_metric('accuracy', config_name='multilabel'), None))
+        metrics_list.append((load_metric('f1', config_name='multilabel'), 'micro'))
+        metrics_list.append((load_metric('f1', config_name='multilabel'), 'macro'))
+    elif data_args.task_name in {'tacred', 'fewrel'}:
+        metrics_list.append((load_metric('precision', config_name='multilabel'), 'micro'))
+        metrics_list.append((load_metric('precision', config_name='multilabel'), 'macro'))
+        metrics_list.append((load_metric('recall', config_name='multilabel'), 'micro'))
+        metrics_list.append((load_metric('recall', config_name='multilabel'), 'macro'))
+        metrics_list.append((load_metric('f1', config_name='multilabel'), 'micro'))
+        metrics_list.append((load_metric('f1', config_name='multilabel'), 'macro'))
 
     def postprocess_text(preds, labels):
         preds = [pred.strip() for pred in preds]
         labels = [label.strip() for label in labels]
 
         # rougeLSum expects newline after each sentence
-        preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
-        labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
+        # preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
+        # labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
+        with open(data_args.labels_file) as f:
+            classes = json.load(f)
+        classes_dict = {cl: i for i, cl in enumerate(classes)}
+        preds_num = []
+        for el in preds:
+            pn = len(classes) * [0]
+            for x in el.split():
+                if x in classes_dict:
+                    pn[classes_dict[x]] = 1
+            preds_num.append(pn)
 
-        return preds, labels
+        labels_num = []
+        for el in labels:
+            ln = len(classes) * [0]
+            for x in el.split():
+                if x in classes_dict:
+                    ln[classes_dict[x]] = 1
+            labels_num.append(ln)
 
+        return preds_num, labels_num
+        
     def compute_metrics(eval_preds):
         preds, labels = eval_preds
         if isinstance(preds, tuple):
@@ -601,42 +676,70 @@ def main():
         # Some simple post-processing
         decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
 
-        result = metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
-        # Extract a few results from ROUGE
-        result = {key: value.mid.fmeasure * 100 for key, value in result.items()}
+        result = {}
+        for metric, average in metrics_list:
+            if average:
+                res = metric.compute(predictions=decoded_preds, references=decoded_labels, average=average)
+            else:
+                res = metric.compute(predictions=decoded_preds, references=decoded_labels)
+            for k in res:
+                result['{}_{}'.format(k, average) if average else k] = res[k]
 
-        prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in preds]
-        result["gen_len"] = np.mean(prediction_lens)
-        result = {k: round(v, 4) for k, v in result.items()}
         return result
 
     # Initialize our Trainer
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
+        train_dataset=train_dataset if training_args.do_train else None,
+        eval_dataset=eval_dataset if training_args.do_eval else None,
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics if training_args.predict_with_generate else None,
         callbacks=[LogCallback]
     )
 
-    if training_args.do_predict:
-        max_length = (
-            training_args.generation_max_length
-            if training_args.generation_max_length is not None
-            else data_args.val_max_target_length
+    checkpoint = None
+    if training_args.resume_from_checkpoint is not None:
+        checkpoint = training_args.resume_from_checkpoint
+    elif last_checkpoint is not None:
+        checkpoint = last_checkpoint
+
+    # Training
+    if training_args.do_train:
+        train_result = trainer.train(resume_from_checkpoint=checkpoint)
+        trainer.save_model()  # Saves the tokenizer too for easy upload
+
+        metrics = train_result.metrics
+        max_train_samples = (
+            data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
         )
-        num_beams = data_args.num_beams if data_args.num_beams is not None else training_args.generation_num_beams
+        metrics["train_samples"] = min(max_train_samples, len(train_dataset))
 
-
-        checkpoint = None
-        if training_args.resume_from_checkpoint is not None:
-            checkpoint = training_args.resume_from_checkpoint
-        elif last_checkpoint is not None:
-            checkpoint = last_checkpoint
-
+        trainer.log_metrics("train", metrics)
+        trainer.save_metrics("train", metrics)
+        trainer.save_state()
+    else:
         load_weights(training_args, trainer, resume_from_checkpoint=checkpoint)
 
+    # Evaluation
+    results = {}
+    max_length = (
+        training_args.generation_max_length
+        if training_args.generation_max_length is not None
+        else data_args.val_max_target_length
+    )
+    num_beams = data_args.num_beams if data_args.num_beams is not None else training_args.generation_num_beams
+    if training_args.do_eval:
+        logger.info("*** Evaluate ***")
+        metrics = trainer.evaluate(max_length=max_length, num_beams=num_beams, metric_key_prefix="eval")
+        max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
+        metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
+
+        trainer.log_metrics("eval", metrics)
+        trainer.save_metrics("eval", metrics)
+
+    if training_args.do_predict:
         logger.info("*** Predict ***")
 
         predict_results = trainer.predict(
@@ -657,7 +760,7 @@ def main():
                     predict_results.predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
                 )
                 predictions = [pred.strip() for pred in predictions]
-                output_prediction_file = os.path.join(training_args.output_dir, data_args.generated_predictions_file)
+                output_prediction_file = os.path.join(training_args.output_dir, "generated_predictions.txt")
                 with open(output_prediction_file, "w") as writer:
                     writer.write("\n".join(predictions))
 
@@ -677,6 +780,8 @@ def main():
         trainer.push_to_hub(**kwargs)
     else:
         trainer.create_model_card(**kwargs)
+
+    return results
 
 
 def _mp_fn(index):
