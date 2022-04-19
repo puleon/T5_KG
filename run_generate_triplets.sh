@@ -4,8 +4,8 @@
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-task=figer
-model_dir=./trained_models/t5base_trex_pretrain_padtomaxlenF_generate_triplets
+task=tacred
+model_dir=./trained_models/t5base_trex_pretrain_padtomaxlenF_dsp_shddpsimple_TRIPLETS
 dt=$(date '+%d.%m.%Y_%H.%M.%S')
 
 mkdir $model_dir
@@ -17,7 +17,8 @@ do
 	python ./run_summarization_predict.py \
 			--model_name_or_path t5-base \
 			--cache_dir ./downloaded_models \
-			--output_dir $model_dir \
+                        --resume_from_checkpoint $model_dir/checkpoint-214865 \
+                        --output_dir $model_dir \
 	\
 			--text_column input \
 			--summary_column label \

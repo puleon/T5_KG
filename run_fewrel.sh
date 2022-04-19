@@ -47,6 +47,7 @@ deepspeed ./run_summarization_finetune.py \
 \
                 --do_predict True \
                 --load_best_model_at_end True \
+                --metric_for_best_model f1_macro \
                 --test_file ./data/${task}_json/test.json
                 
 
