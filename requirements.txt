@@ -1,6 +1,7 @@
 transformers
 datasets
 nltk
+sklearn
 rouge_score
 fairscale
 deepspeed
