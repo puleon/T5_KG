@@ -611,7 +611,7 @@ preprocessor_functions = {
                             convert_to_t5_examples_et_3,
                                 convert_to_t5_examples_et_4),
     "tacred": (convert_to_t5_examples_rc,
-                    convert_to_t5_examples_rc_1)
+                    convert_to_t5_examples_rc_1),
     "fewrel": (convert_to_t5_examples_rc,
-                    convert_to_t5_examples_rc)
+                    convert_to_t5_examples_rc_1)
 }
