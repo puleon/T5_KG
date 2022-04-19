@@ -549,7 +549,7 @@ def convert_to_t5_examples_rc(examples, relations=None):
     return t5_examples
 
 
-def convert_to_t5_examples_with_rc_1(examples, triplets, relations=None):
+def convert_to_t5_examples_rc_1(examples, triplets, relations=None):
     """ Loads a data file into a list of `InputBatch`s
         `cls_token_at_end` define the location of the CLS token:
             - False (Default, BERT/XLM pattern): [CLS] + A + [SEP] + B + [SEP]
