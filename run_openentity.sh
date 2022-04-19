@@ -25,6 +25,7 @@ python ./run_summarization_finetune.py \
                 --preprocessing_num_workers 20 \
                 --max_source_length 256 \
                 --max_target_length 64 \
+                --generation_max_length 64 \
                 --val_max_target_length 64 \
                 --source_prefix  "" \
                 --predict_with_generate True \

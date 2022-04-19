@@ -133,6 +133,13 @@ class DataTrainingArguments:
     """
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
+    generated_predictions_file: Optional[str] = field(
+        default="generated_predictions.txt", metadata={"help": "The name of the file with generated predictions."}
+    )
+    additional_special_tokens: str = field(
+        default=None,
+        metadata={"help": "Additional special tokens to use."},
+    )
     task_name: str = field(
         default="openentity",
         metadata={"help": "The name of the task to train selected in the list: 'openentity', 'figer'"},
@@ -443,6 +450,9 @@ def main():
         use_auth_token=True if model_args.use_auth_token else None,
     )
 
+    if data_args.additional_special_tokens:
+        special_tokens_dict = {'additional_special_tokens': data_args.additional_special_tokens.split(',')}
+        num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
     model.resize_token_embeddings(len(tokenizer))
 
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
@@ -628,20 +638,30 @@ def main():
         metrics_list.append((load_metric('f1', config_name='multilabel'), 'micro'))
         metrics_list.append((load_metric('f1', config_name='multilabel'), 'macro'))
     elif data_args.task_name in {'tacred', 'fewrel'}:
-        metrics_list.append((load_metric('precision', config_name='multilabel'), 'micro'))
-        metrics_list.append((load_metric('precision', config_name='multilabel'), 'macro'))
-        metrics_list.append((load_metric('recall', config_name='multilabel'), 'micro'))
-        metrics_list.append((load_metric('recall', config_name='multilabel'), 'macro'))
-        metrics_list.append((load_metric('f1', config_name='multilabel'), 'micro'))
-        metrics_list.append((load_metric('f1', config_name='multilabel'), 'macro'))
+        metrics_list.append((load_metric('precision'), 'micro'))
+        metrics_list.append((load_metric('precision'), 'macro'))
+        metrics_list.append((load_metric('recall'), 'micro'))
+        metrics_list.append((load_metric('recall'), 'macro'))
+        metrics_list.append((load_metric('f1'), 'micro'))
+        metrics_list.append((load_metric('f1'), 'macro'))
 
     def postprocess_text(preds, labels):
         preds = [pred.strip() for pred in preds]
         labels = [label.strip() for label in labels]
 
-        # rougeLSum expects newline after each sentence
-        # preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
-        # labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
+        with open(data_args.labels_file) as f:
+            classes = json.load(f)
+        classes_dict = {cl: i for i, cl in enumerate(classes)}
+
+        preds_num = [classes_dict.get(el, 0) for el in preds]
+        labels_num = [classes_dict.get(el, 0) for el in labels]
+
+        return preds_num, labels_num
+
+    def postprocess_text_multilabel(preds, labels):
+        preds = [pred.strip() for pred in preds]
+        labels = [label.strip() for label in labels]
+
         with open(data_args.labels_file) as f:
             classes = json.load(f)
         classes_dict = {cl: i for i, cl in enumerate(classes)}
@@ -674,7 +694,8 @@ def main():
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
         # Some simple post-processing
-        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
+        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels) \
+	    if data_args.task_name in {'tacred', 'fewrel'} else postprocess_text_multilabel(decoded_preds, decoded_labels)
 
         result = {}
         for metric, average in metrics_list:
@@ -760,7 +781,7 @@ def main():
                     predict_results.predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
                 )
                 predictions = [pred.strip() for pred in predictions]
-                output_prediction_file = os.path.join(training_args.output_dir, "generated_predictions.txt")
+                output_prediction_file = os.path.join(training_args.output_dir,  data_args.generated_predictions_file)
                 with open(output_prediction_file, "w") as writer:
                     writer.write("\n".join(predictions))
 

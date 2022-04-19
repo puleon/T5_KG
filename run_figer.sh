@@ -11,7 +11,7 @@ mkdir $model_dir
 cp ./run_figer.sh $model_dir/run_figer.sh_$dt
 cp ./run_summarization_finetune.py $model_dir/run_summarization_finetune.py_$dt
 
-deepspeed --master_port 8000 ./run_summarization_finetune.py \
+python ./run_summarization_finetune.py \
                 --model_name_or_path t5-small \
                 --cache_dir ./downloaded_models \
                 --output_dir $model_dir \
