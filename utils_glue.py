@@ -511,7 +511,7 @@ def convert_to_t5_examples_et_4(examples, triplets=None, relations=None):
     return t5_examples
 
 
-def convert_to_t5_examples_rc(examples, relations=None):
+def convert_to_t5_examples_rc(examples, triplets=None, relations=None):
     """ Loads a data file into a list of `InputBatch`s
         `cls_token_at_end` define the location of the CLS token:
             - False (Default, BERT/XLM pattern): [CLS] + A + [SEP] + B + [SEP]
@@ -528,7 +528,7 @@ def convert_to_t5_examples_rc(examples, relations=None):
 
         text_a = example.text_a
         subj_start, subj_end, obj_start, obj_end = example.text_b
-        labels = relations[example.label]
+        labels = relations[example.label] if relations else example.label
         
         if subj_start < obj_start:
             inputs = text_a[:subj_start] + '<extra_id_0>' + text_a[subj_start:subj_end] + '<extra_id_1>' + \
@@ -549,7 +549,7 @@ def convert_to_t5_examples_rc(examples, relations=None):
     return t5_examples
 
 
-def convert_to_t5_examples_rc_1(examples, triplets, relations=None):
+def convert_to_t5_examples_rc_1(examples, triplets=None, relations=None):
     """ Loads a data file into a list of `InputBatch`s
         `cls_token_at_end` define the location of the CLS token:
             - False (Default, BERT/XLM pattern): [CLS] + A + [SEP] + B + [SEP]
@@ -565,9 +565,8 @@ def convert_to_t5_examples_rc_1(examples, triplets, relations=None):
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
         text_a = example.text_a
-        triplet_len = len(triplets[ex_index] + '<extra_id_0>')
-        subj_start, subj_end, obj_start, obj_end = [el+triplet_len for el in example.text_b]
-        labels = relations[example.label]
+        subj_start, subj_end, obj_start, obj_end = example.text_b
+        labels = relations[example.label] if relations else example.label
         
         if subj_start < obj_start:
             inputs = triplets[ex_index] + '<extra_id_0>' + \
