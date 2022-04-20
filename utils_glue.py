@@ -565,8 +565,7 @@ def convert_to_t5_examples_rc_1(examples, triplets=None, relations=None):
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
         text_a = example.text_a
-        triplet_len = len(triplets[ex_index] + '<extra_id_0>')
-        subj_start, subj_end, obj_start, obj_end = [el+triplet_len for el in example.text_b]
+        subj_start, subj_end, obj_start, obj_end = example.text_b
         labels = relations[example.label] if relations else example.label
         
         if subj_start < obj_start:
