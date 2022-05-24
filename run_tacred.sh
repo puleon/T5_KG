@@ -25,8 +25,8 @@ python ./run_summarization_finetune.py \
                 --preprocessing_num_workers 20 \
                 --max_source_length 256 \
                 --max_target_length 64 \
-                 --generation_max_length 64 \
- 		 --val_max_target_length 64 \
+                --generation_max_length 64 \
+                --val_max_target_length 64 \
                 --source_prefix  "" \
                 --predict_with_generate True \
                 --evaluation_strategy epoch \
@@ -37,7 +37,7 @@ python ./run_summarization_finetune.py \
                 --per_device_eval_batch_size 32 \
                 --learning_rate 1e-3 \
                 --optim adafactor \
-		--num_train_epochs 3.0 \
+                --num_train_epochs 3.0 \
                 --logging_strategy steps \
                 --log_level info \
                 --logging_dir $model_dir \

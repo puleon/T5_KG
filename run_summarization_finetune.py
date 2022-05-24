@@ -24,6 +24,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
+from functools import partial
 
 import torch
 import datasets
@@ -133,6 +134,12 @@ class DataTrainingArguments:
     """
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
+    use_triplets: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to use triplets or not."
+        },
+    )
     generated_predictions_file: Optional[str] = field(
         default="generated_predictions.txt", metadata={"help": "The name of the file with generated predictions."}
     )
@@ -637,13 +644,18 @@ def main():
         metrics_list.append((load_metric('accuracy', config_name='multilabel'), None))
         metrics_list.append((load_metric('f1', config_name='multilabel'), 'micro'))
         metrics_list.append((load_metric('f1', config_name='multilabel'), 'macro'))
-    elif data_args.task_name in {'tacred', 'fewrel'}:
+    elif data_args.task_name == 'fewrel':
         metrics_list.append((load_metric('precision'), 'micro'))
         metrics_list.append((load_metric('precision'), 'macro'))
         metrics_list.append((load_metric('recall'), 'micro'))
         metrics_list.append((load_metric('recall'), 'macro'))
         metrics_list.append((load_metric('f1'), 'micro'))
         metrics_list.append((load_metric('f1'), 'macro'))
+    elif data_args.task_name == 'tacred':
+        metrics_list.append((load_metric('f1'), 'micro'))
+        metrics_list.append((load_metric('./tacred_precision_micro'), None))
+        metrics_list.append((load_metric('./tacred_recall_micro'), None))
+        metrics_list.append((load_metric('./tacred_f1_micro'), None))
 
     def postprocess_text(preds, labels):
         preds = [pred.strip() for pred in preds]
@@ -683,10 +695,27 @@ def main():
 
         return preds_num, labels_num
         
-    def compute_metrics(eval_preds):
+    def postprocess_triplets(inputs):
+        inputs_wo_triplets = []
+        len_input = inputs.shape[1]
+        for inp in inputs:
+            i = 0
+            while i < len_input and inp[i] != 32099:
+                i += 1
+            if i != len_input:
+                inputs_wo_triplets.append(np.concatenate([inp[i+1:], np.zeros(i+1, dtype=np.int64)]))
+            else:
+                inputs_wo_triplets.append(inp)
+        return np.stack(inputs_wo_triplets)
+
+    def compute_metrics(eval_preds, use_triplets=False):
         preds, labels = eval_preds
         if isinstance(preds, tuple):
             preds = preds[0]
+        if use_triplets:
+            preds = postprocess_triplets(preds)
+            labels = postprocess_triplets(labels)
+
         decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
         if data_args.ignore_pad_token_for_loss:
             # Replace -100 in the labels as we can't decode them.
@@ -716,7 +745,8 @@ def main():
         eval_dataset=eval_dataset if training_args.do_eval else None,
         tokenizer=tokenizer,
         data_collator=data_collator,
-        compute_metrics=compute_metrics if training_args.predict_with_generate else None,
+        compute_metrics=partial(compute_metrics, use_triplets=data_args.use_triplets) \
+            if training_args.predict_with_generate else None,
         callbacks=[LogCallback]
     )
 

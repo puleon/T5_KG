@@ -2,10 +2,10 @@
 
 source ~/envs/transformers_new/bin/activate
 
-export CUDA_VISIBLE_DEVICES=4,5
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 task=fewrel
-model_dir=./trained_models/t5_${task}_padtomaxlenF_dsp
+model_dir=./trained_models/t5large_${task}_padtomaxlenF_adaf
 dt=$(date '+%d.%m.%Y_%H.%M.%S')
 mkdir $model_dir
 cp ./run_${task}.sh $model_dir/run_${task}.sh_$dt
@@ -14,7 +14,7 @@ cp ./run_summarization_finetune.py $model_dir/run_summarization_finetune.py_$dt
 for i in 630
 do
 deepspeed ./run_summarization_finetune.py \
-                --model_name_or_path t5-small \
+                --model_name_or_path t5-large \
                 --cache_dir ./downloaded_models \
                 --resume_from_checkpoint $model_dir/checkpoint-${i} \
                 --output_dir $model_dir \
