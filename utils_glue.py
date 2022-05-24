@@ -383,10 +383,10 @@ def convert_to_t5_examples_et_1(examples, triplets=None, relations=None):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
-        triplet_len = len(triplets[ex_index] + '<extra_id_0>')
-        start, end = triplet_len + example.text_b[0], triplet_len + example.text_b[1]
-        text = triplets[ex_index] + '<extra_id_0>' + example.text_a
-        inputs = text[:start] + '<extra_id_1>' + text[start:end] +  '<extra_id_2>' + text[end:] 
+        start, end = example.text_b[0], example.text_b[1]
+        text = example.text_a
+        inputs = text[:start] + '<extra_id_1>' + text[start:end] +  '<extra_id_2>' + text[end:]
+        inputs = triplets[ex_index] + '<extra_id_0>' + inputs 
         
         labels = example.label[0] if len(example.label) > 0 else ''
         i = 1
@@ -421,82 +421,13 @@ def convert_to_t5_examples_et_2(examples, triplets=None, relations=None):
 
         start, end = example.text_b[0], example.text_b[1]
         text = example.text_a
-        inputs = text[:start] + '<@>' + text[start:end] +  '<#>' + text[end:] 
+        inputs = text[:start] + '<extra_id_0>' + text[start:end] +  '<extra_id_1>' + text[end:]
         
         labels = example.label[0] if len(example.label) > 0 else ''
+        labels = triplets[ex_index] + '<extra_id_0>' + labels
         i = 1
         while i < len(example.label):
-            labels += '<&>'
-            labels += example.label[i]
-            i += 1
-
-        if ex_index < 5:
-            logger.info("*** Example ***")
-            logger.info("guid: %s" % (example.guid))
-            logger.info("input: %s" % inputs)
-            logger.info("label: %s" % labels)
-        t5_examples.append({'input': inputs, 'label': labels})
-
-    return t5_examples
-
-
-def convert_to_t5_examples_et_3(examples, triplets=None, relations=None):
-    """ Loads a data file into a list of `InputBatch`s
-        `cls_token_at_end` define the location of the CLS token:
-            - False (Default, BERT/XLM pattern): [CLS] + A + [SEP] + B + [SEP]
-            - True (XLNet/GPT pattern): A + [SEP] + B + [SEP] + [CLS]
-        `cls_token_segment_id` define the segment id associated to the CLS token (0 for BERT, 2 for XLNet)
-    """
-
-    t5_examples = []
-    for (ex_index, example) in enumerate(examples):
-        if ex_index % 10000 == 0:
-            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
-
-        start, end = example.text_b[0], example.text_b[1]
-        text = example.text_a
-        inputs = text[:start] + '<@>' + text[start:end] +  '<#>' + text[end:] 
-        
-        labels = '<@>' + text[start:end] +  '<#>'
-        labels += example.label[0] if len(example.label) > 0 else ''
-        i = 1
-        while i < len(example.label):
-            labels += '<&>'
-            labels += example.label[i]
-            i += 1
-
-        if ex_index < 5:
-            logger.info("*** Example ***")
-            logger.info("guid: %s" % (example.guid))
-            logger.info("input: %s" % inputs)
-            logger.info("label: %s" % labels)
-        t5_examples.append({'input': inputs, 'label': labels})
-
-    return t5_examples
-
-
-def convert_to_t5_examples_et_4(examples, triplets=None, relations=None):
-    """ Loads a data file into a list of `InputBatch`s
-        `cls_token_at_end` define the location of the CLS token:
-            - False (Default, BERT/XLM pattern): [CLS] + A + [SEP] + B + [SEP]
-            - True (XLNet/GPT pattern): A + [SEP] + B + [SEP] + [CLS]
-        `cls_token_segment_id` define the segment id associated to the CLS token (0 for BERT, 2 for XLNet)
-    """
-
-    t5_examples = []
-    for (ex_index, example) in enumerate(examples):
-        if ex_index % 10000 == 0:
-            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
-
-        start, end = example.text_b[0], example.text_b[1]
-        text = example.text_a
-        inputs = text[:start] + '<extra_id_0>' + text[start:end] +  '<extra_id_1>' + text[end:] 
-        
-        labels = '<extra_id_0>' + text[start:end] +  '<extra_id_1>'
-        labels += example.label[0] if len(example.label) > 0 else ''
-        i = 1
-        while i < len(example.label):
-            extra_tok = '<extra_id_{}>'.format(i+1)
+            extra_tok = '<extra_id_{}>'.format(i)
             labels += extra_tok
             labels += example.label[i]
             i += 1
@@ -589,6 +520,45 @@ def convert_to_t5_examples_rc_1(examples, triplets=None, relations=None):
     return t5_examples
 
 
+def convert_to_t5_examples_rc_2(examples, triplets=None, relations=None):
+    """ Loads a data file into a list of `InputBatch`s
+        `cls_token_at_end` define the location of the CLS token:
+            - False (Default, BERT/XLM pattern): [CLS] + A + [SEP] + B + [SEP]
+            - True (XLNet/GPT pattern): A + [SEP] + B + [SEP] + [CLS]
+        `cls_token_segment_id` define the segment id associated to the CLS token (0 for BERT, 2 for XLNet)
+    """
+
+    # label_map = {label: i for i, label in enumerate(label_list)}
+
+    t5_examples = []
+    for (ex_index, example) in enumerate(examples):
+        if ex_index % 10000 == 0:
+            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
+
+        text_a = example.text_a
+        subj_start, subj_end, obj_start, obj_end = example.text_b
+        labels = relations[example.label] if relations else example.label
+        labels = triplets[ex_index] + '<extra_id_0>' + labels
+
+        if subj_start < obj_start:
+            inputs =  text_a[:subj_start] + '<extra_id_0>' + text_a[subj_start:subj_end] + '<extra_id_1>' + \
+                        text_a[subj_end:obj_start] + '<extra_id_2>' + text_a[obj_start:obj_end] + '<extra_id_3>' + \
+                            text_a[obj_end:]
+        else:
+            inputs = text_a[:obj_start] + '<extra_id_2>' + text_a[obj_start:obj_end] + '<extra_id_3>' + \
+                        text_a[obj_end:subj_start] + '<extra_id_0>' + text_a[subj_start:subj_end] + '<extra_id_1>' + \
+                            text_a[subj_end:]
+
+        if ex_index < 5:
+            logger.info("*** Example ***")
+            logger.info("guid: %s" % (example.guid))
+            logger.info("input: %s" % inputs)
+            logger.info("label: %s" % labels)
+        t5_examples.append({'input': inputs, 'label': labels})
+
+    return t5_examples
+
+
 processors = {
     "trex": TREXProcessor,
     "openentity": EntityTypeProcessor,
@@ -601,16 +571,14 @@ preprocessor_functions = {
     "trex": convert_to_t5_examples_trex,
     "openentity": (convert_to_t5_examples_et,
                     convert_to_t5_examples_et_1,
-                        convert_to_t5_examples_et_2,
-                            convert_to_t5_examples_et_3,
-                                convert_to_t5_examples_et_4),
+                        convert_to_t5_examples_et_2),
     "figer": (convert_to_t5_examples_et,
                     convert_to_t5_examples_et_1,
-                        convert_to_t5_examples_et_2,
-                            convert_to_t5_examples_et_3,
-                                convert_to_t5_examples_et_4),
+                        convert_to_t5_examples_et_2),
     "tacred": (convert_to_t5_examples_rc,
-                    convert_to_t5_examples_rc_1),
+                    convert_to_t5_examples_rc_1,
+                        convert_to_t5_examples_rc_2),
     "fewrel": (convert_to_t5_examples_rc,
-                    convert_to_t5_examples_rc_1)
+                    convert_to_t5_examples_rc_1,
+                        convert_to_t5_examples_rc_2)
 }

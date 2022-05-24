@@ -2,9 +2,9 @@
 
 source ~/envs/transformers_new/bin/activate
 
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=5,7
 
-model_dir=./trained_models/t5_trex_pretrain_padtomaxlenF
+model_dir=./trained_models/t5_trex_pretrain_padtomaxlenF_adaf
 dt=$(date '+%d.%m.%Y_%H.%M.%S')
 
 mkdir $model_dir
@@ -24,6 +24,7 @@ python ./run_summarization.py \
                 --max_source_length 256 \
                 --max_target_length 64 \
                 --val_max_target_length 64 \
+                --generation_max_length 64 \
                 --source_prefix  "" \
                 --predict_with_generate True \
                 --evaluation_strategy epoch \
@@ -33,6 +34,7 @@ python ./run_summarization.py \
                 --per_device_train_batch_size 64 \
                 --per_device_eval_batch_size 64 \
                 --learning_rate 1e-3 \
+                --optim adafactor \
                 --num_train_epochs 3.0 \
                 --logging_strategy steps \
                 --log_level info \

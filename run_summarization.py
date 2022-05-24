@@ -360,13 +360,13 @@ def main():
     else:
         data_files = {}
         if data_args.train_file is not None:
-            data_files["train"] = data_args.train_file
+            data_files["train"] = data_args.train_file.split(',')
             extension = data_args.train_file.split(".")[-1]
         if data_args.validation_file is not None:
-            data_files["validation"] = data_args.validation_file
+            data_files["validation"] = data_args.validation_file.split(',')
             extension = data_args.validation_file.split(".")[-1]
         if data_args.test_file is not None:
-            data_files["test"] = data_args.test_file
+            data_files["test"] = data_args.test_file.split(',')
             extension = data_args.test_file.split(".")[-1]
         raw_datasets = load_dataset(extension, data_files=data_files, cache_dir=model_args.cache_dir, field='data')
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at

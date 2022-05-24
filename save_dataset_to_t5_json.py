@@ -51,7 +51,7 @@ def main():
     parser.add_argument("--task_name", default=None, type=str, required=True,
                         help="The name of the task to train.")
     parser.add_argument("--use_triplets", default=False, type=bool, required=False,
-                        help="The name of the task to train.")
+                        help="Whether to use triplets or not.")
     parser.add_argument("--function_id", default=0, type=int, required=False,
                         help="Should be 1 with use_triplets set to True.")
     parser.add_argument("--data_dir", default=None, type=str, required=True,

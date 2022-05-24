@@ -5,14 +5,13 @@ source ~/envs/transformers_new/bin/activate
 export CUDA_VISIBLE_DEVICES=4,5,6,7
 
 task=tacred
-model_dir=./trained_models/t5base_${task}_padtomaxlenF_dsp
+model_dir=./trained_models/t5base_${task}_padtomaxlenF_adaf_ep3
 dt=$(date '+%d.%m.%Y_%H.%M.%S')
 mkdir $model_dir
 cp ./run_${task}.sh $model_dir/run_${task}.sh_$dt
 cp ./run_summarization_finetune.py $model_dir/run_summarization_finetune.py_$dt
 
-deepspeed --master_port 6000 ./run_summarization_finetune.py \
-		--fp16 \
+python ./run_summarization_finetune.py \
                 --model_name_or_path t5-base \
                 --cache_dir ./downloaded_models \
                 --output_dir $model_dir \
@@ -26,6 +25,7 @@ deepspeed --master_port 6000 ./run_summarization_finetune.py \
                 --preprocessing_num_workers 20 \
                 --max_source_length 256 \
                 --max_target_length 64 \
+                --generation_max_length 64 \
                 --val_max_target_length 64 \
                 --source_prefix  "" \
                 --predict_with_generate True \
@@ -33,10 +33,11 @@ deepspeed --master_port 6000 ./run_summarization_finetune.py \
 \
                 --do_train \
                 --do_eval \
-                --per_device_train_batch_size 64 \
-                --per_device_eval_batch_size 64 \
+                --per_device_train_batch_size 32 \
+                --per_device_eval_batch_size 32 \
                 --learning_rate 1e-3 \
-                --num_train_epochs 10.0 \
+                --optim adafactor \
+                --num_train_epochs 3.0 \
                 --logging_strategy steps \
                 --log_level info \
                 --logging_dir $model_dir \
@@ -48,6 +49,7 @@ deepspeed --master_port 6000 ./run_summarization_finetune.py \
 \
                 --do_predict True \
                 --load_best_model_at_end True \
+                --metric_for_best_model f1_micro \
                 --test_file ./data/${task}_json/test.json
                 
 

@@ -5,7 +5,7 @@ source ~/envs/transformers_new/bin/activate
 export CUDA_VISIBLE_DEVICES=4,5
 
 task=openentity
-model_dir=./trained_models/t5_${task}_padtomaxlenF_bmf1_adaf_schedconst
+model_dir=./trained_models/t5_${task}_padtomaxlenF_wtripbase_bmf1_adaf
 dt=$(date '+%d.%m.%Y_%H.%M.%S')
 mkdir $model_dir
 cp ./run_openentity.sh $model_dir/run_openentity.sh_$dt
@@ -19,9 +19,9 @@ python ./run_summarization_finetune.py \
                 --text_column input \
                 --summary_column label \
                 --task_name $task \
-                --train_file ./data/${task}_json/train.json \
-                --validation_file ./data/${task}_json/dev.json \
-                --labels_file ./data/${task}_json/labels.json \
+                --train_file ./data/${task}_with_triplets_base_json/train.json \
+                --validation_file ./data/${task}_with_triplets_base_json/dev.json \
+                --labels_file ./data/${task}_with_triplets_base_json/labels.json \
                 --preprocessing_num_workers 20 \
                 --max_source_length 256 \
                 --max_target_length 64 \
@@ -50,9 +50,10 @@ python ./run_summarization_finetune.py \
                 --do_predict True \
                 --load_best_model_at_end True \
 		--metric_for_best_model f1_micro \
-                --test_file ./data/${task}_json/test.json
+                --test_file ./data/${task}_with_triplets_base_json/test.json
                 
 
+# --warmup_ratio 0.3 \
 # --lr_scheduler_type constant \
 # --max_predict_samples 512 \
 # --eval_steps 500 \
