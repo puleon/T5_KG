@@ -33,7 +33,12 @@ def load_and_save_examples(args, dataset_type):
 
         assert len(examples) == len(triplets)
 
-    t5_examples = preprocessor_functions[args.task_name][args.function_id](examples, triplets, relations)
+    if args.use_gold_triplets:
+        with open(os.path.join(args.triplets_dir, '{}_{}.json'.format(args.task_name, dataset_type))) as f:
+            triplets = json.load(f)
+            triplets = {el[0]: el[1] for el in triplets}
+
+    t5_examples = preprocessor_functions[args.task_name][args.function_id](examples, triplets, relations, args.num_triplets)
 
     dataset = {"version": "0.1.0"}
     dataset["data"] = t5_examples
@@ -52,8 +57,12 @@ def main():
                         help="The name of the task to train.")
     parser.add_argument("--use_triplets", default=False, type=bool, required=False,
                         help="Whether to use triplets or not.")
+    parser.add_argument("--use_gold_triplets", default=False, type=bool, required=False,
+                        help="Whether to use triplets or not.")
     parser.add_argument("--function_id", default=0, type=int, required=False,
-                        help="Should be 1 with use_triplets set to True.")
+                        help="0 is for default dataset generation.\nShould be 1 to generate with triplets (use_triplets should be set to True).\n")
+    parser.add_argument("--num_triplets", default=1, type=int, required=False,
+                        help="Maximum number of triplets to use (if presented).\n")
     parser.add_argument("--data_dir", default=None, type=str, required=True,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
     parser.add_argument("--triplets_dir", default=None, type=str, required=False,

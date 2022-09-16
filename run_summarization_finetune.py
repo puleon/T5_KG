@@ -339,6 +339,7 @@ def load_weights(args, trainer, resume_from_checkpoint):
                 del state_dict
 
 def main():
+    os.environ["WANDB_DISABLED"] = "true"
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
@@ -635,7 +636,7 @@ def main():
 
     # Metric
     metrics_list = []
-    if data_args.task_name == 'openentity':
+    if data_args.task_name in {'openentity', 'trex_entity_typing'}:
         metrics_list.append((load_metric('precision', config_name='multilabel'), 'micro'))
         metrics_list.append((load_metric('recall', config_name='multilabel'), 'micro'))
         metrics_list.append((load_metric('f1', config_name='multilabel'), 'micro'))
