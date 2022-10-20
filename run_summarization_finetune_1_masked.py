@@ -1,0 +1,844 @@
+#!/usr/bin/env python
+# coding=utf-8
+# Copyright 2021 The HuggingFace Team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+Fine-tuning the library models for sequence to sequence.
+"""
+# You can also adapt this script on your own sequence to sequence task. Pointers for this are left as comments.
+
+import logging
+import os
+import json
+import sys
+from dataclasses import dataclass, field
+from typing import Optional
+from functools import partial
+
+import torch
+import datasets
+import nltk  # Here to have a nice missing dependency error message early on
+import numpy as np
+from datasets import load_dataset, load_metric
+
+import transformers
+from filelock import FileLock
+from transformers import (
+    AutoConfig,
+    PretrainedConfig,
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+    DataCollatorForSeq2Seq,
+    HfArgumentParser,
+    MBart50Tokenizer,
+    MBart50TokenizerFast,
+    MBartTokenizer,
+    MBartTokenizerFast,
+    Seq2SeqTrainer,
+    Seq2SeqTrainingArguments,
+    set_seed,
+    __version__
+)
+from transformers.file_utils import is_offline_mode
+from transformers.trainer_utils import get_last_checkpoint
+from transformers.utils import check_min_version
+from transformers.utils.versions import require_version
+
+from models import make_t5, make_double_t5, make_masked_t5
+
+# Will error if the minimal version of Transformers is not installed. Remove at your own risks.
+check_min_version("4.18.0.dev0")
+
+require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/summarization/requirements.txt")
+
+logger = logging.getLogger(__name__)
+
+try:
+    nltk.data.find("tokenizers/punkt")
+except (LookupError, OSError):
+    if is_offline_mode():
+        raise LookupError(
+            "Offline mode: run this script without TRANSFORMERS_OFFLINE first to download nltk data files"
+        )
+    with FileLock(".lock") as lock:
+        nltk.download("punkt", quiet=True)
+
+# A list of all multilingual tokenizer which require lang attribute.
+MULTILINGUAL_TOKENIZERS = [MBartTokenizer, MBartTokenizerFast, MBart50Tokenizer, MBart50TokenizerFast]
+
+
+class LogCallback(transformers.TrainerCallback):
+    # def on_evaluate(self, args, state, control, **kwargs):
+    #     # calculate loss here
+
+    def on_log(self, args, state, control, **kwargs):
+        with open(os.path.join(args.logging_dir, "log.txt"), 'w') as f:
+            json.dump(state.log_history, f)
+
+
+@dataclass
+class ModelArguments:
+    """
+    Arguments pertaining to which model/config/tokenizer we are going to fine-tune from.
+    """
+
+    model_name_or_path: str = field(
+        default=None, metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
+    state_dict: str = field(
+        default=None, metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )    
+    triplet_model_name_or_path: str = field(
+        default=None, metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )    
+    config_name: Optional[str] = field(
+        default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
+    )
+    tokenizer_name: Optional[str] = field(
+        default=None, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+    )
+    cache_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Where to store the pretrained models downloaded from huggingface.co"},
+    )
+    use_fast_tokenizer: bool = field(
+        default=True,
+        metadata={"help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."},
+    )
+    model_revision: str = field(
+        default="main",
+        metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
+    )
+    use_auth_token: bool = field(
+        default=False,
+        metadata={
+            "help": "Will use the token generated when running `transformers-cli login` (necessary to use this script "
+            "with private models)."
+        },
+    )
+    resize_position_embeddings: Optional[bool] = field(
+        default=None,
+        metadata={
+            "help": "Whether to automatically resize the position embeddings if `max_source_length` exceeds "
+            "the model's position embeddings."
+        },
+    )
+
+
+@dataclass
+class DataTrainingArguments:
+    """
+    Arguments pertaining to what data we are going to input our model for training and eval.
+    """
+    model_type: str = field(
+        default="t5",
+        metadata={
+            "help": "Type of the model to train."
+        },
+    )
+    dropout_rate: Optional[float] = field(
+        default=0.1,
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
+    use_triplets: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to use triplets or not."
+        },
+    )
+    generated_predictions_file: Optional[str] = field(
+        default="generated_predictions.txt", metadata={"help": "The name of the file with generated predictions."}
+    )
+    additional_special_tokens: str = field(
+        default=None,
+        metadata={"help": "Additional special tokens to use."},
+    )
+    task_name: str = field(
+        default="openentity",
+        metadata={"help": "The name of the task to train selected in the list: 'openentity', 'figer'"},
+    )
+    labels_file: str = field(
+        default=None,
+        metadata={
+            "help": "A file with labels names."
+        },
+    )
+    lang: str = field(default=None, metadata={"help": "Language id for summarization."})
+
+    dataset_name: Optional[str] = field(
+        default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
+    )
+    dataset_config_name: Optional[str] = field(
+        default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
+    )
+    text_column: Optional[str] = field(
+        default=None,
+        metadata={"help": "The name of the column in the datasets containing the full texts (for summarization)."},
+    )
+    text_for_generation_column: Optional[str] = field(
+        default=None,
+        metadata={"help": "The name of the column in the datasets containing the full texts (for summarization)."},
+    )
+    summary_column: Optional[str] = field(
+        default=None,
+        metadata={"help": "The name of the column in the datasets containing the summaries (for summarization)."},
+    )
+    train_file: Optional[str] = field(
+        default=None, metadata={"help": "The input training data file (a jsonlines or csv file)."}
+    )
+    validation_file: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "An optional input evaluation data file to evaluate the metrics (rouge) on "
+            "(a jsonlines or csv file)."
+        },
+    )
+    test_file: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "An optional input test data file to evaluate the metrics (rouge) on " "(a jsonlines or csv file)."
+        },
+    )
+    overwrite_cache: bool = field(
+        default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
+    )
+    preprocessing_num_workers: Optional[int] = field(
+        default=None,
+        metadata={"help": "The number of processes to use for the preprocessing."},
+    )
+    max_source_length: Optional[int] = field(
+        default=1024,
+        metadata={
+            "help": "The maximum total input sequence length after tokenization. Sequences longer "
+            "than this will be truncated, sequences shorter will be padded."
+        },
+    )
+    max_target_length: Optional[int] = field(
+        default=128,
+        metadata={
+            "help": "The maximum total sequence length for target text after tokenization. Sequences longer "
+            "than this will be truncated, sequences shorter will be padded."
+        },
+    )
+    val_max_target_length: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "The maximum total sequence length for validation target text after tokenization. Sequences longer "
+            "than this will be truncated, sequences shorter will be padded. Will default to `max_target_length`."
+            "This argument is also used to override the ``max_length`` param of ``model.generate``, which is used "
+            "during ``evaluate`` and ``predict``."
+        },
+    )
+    pad_to_max_length: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to pad all samples to model maximum sentence length. "
+            "If False, will pad the samples dynamically when batching to the maximum length in the batch. More "
+            "efficient on GPU but very bad for TPU."
+        },
+    )
+    max_train_samples: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
+            "value if set."
+        },
+    )
+    max_eval_samples: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
+            "value if set."
+        },
+    )
+    max_predict_samples: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "For debugging purposes or quicker training, truncate the number of prediction examples to this "
+            "value if set."
+        },
+    )
+    num_beams: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Number of beams to use for evaluation. This argument will be passed to ``model.generate``, "
+            "which is used during ``evaluate`` and ``predict``."
+        },
+    )
+    ignore_pad_token_for_loss: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to ignore the tokens corresponding to padded labels in the loss computation or not."
+        },
+    )
+    source_prefix: Optional[str] = field(
+        default="", metadata={"help": "A prefix to add before every source text (useful for T5 models)."}
+    )
+
+    forced_bos_token: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "The token to force as the first generated token after the decoder_start_token_id."
+            "Useful for multilingual models like mBART where the first generated token"
+            "needs to be the target language token (Usually it is the target language token)"
+        },
+    )
+
+    def __post_init__(self):
+        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
+            raise ValueError("Need either a dataset name or a training/validation file.")
+        else:
+            if self.train_file is not None:
+                extension = self.train_file.split(".")[-1]
+                assert extension in ["csv", "json"], "`train_file` should be a csv or a json file."
+            if self.validation_file is not None:
+                extension = self.validation_file.split(".")[-1]
+                assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
+        if self.val_max_target_length is None:
+            self.val_max_target_length = self.max_target_length
+
+
+summarization_name_mapping = {
+    "amazon_reviews_multi": ("review_body", "review_title"),
+    "big_patent": ("description", "abstract"),
+    "cnn_dailymail": ("article", "highlights"),
+    "orange_sum": ("text", "summary"),
+    "pn_summary": ("article", "summary"),
+    "psc": ("extract_text", "summary_text"),
+    "samsum": ("dialogue", "summary"),
+    "thaisum": ("body", "summary"),
+    "xglue": ("news_body", "news_title"),
+    "xsum": ("document", "summary"),
+    "wiki_summary": ("article", "highlights"),
+}
+
+
+def load_weights(args, trainer, resume_from_checkpoint):
+            # Load potential model checkpoint
+        if isinstance(resume_from_checkpoint, bool) and resume_from_checkpoint:
+            resume_from_checkpoint = get_last_checkpoint(args.output_dir)
+            if resume_from_checkpoint is None:
+                raise ValueError(f"No valid checkpoint found in output directory ({args.output_dir})")
+
+        if resume_from_checkpoint is not None:
+            if not os.path.isfile(os.path.join(resume_from_checkpoint, "pytorch_model.bin")):
+                raise ValueError(f"Can't find a valid checkpoint at {resume_from_checkpoint}")
+
+            logger.info(f"Loading model from {resume_from_checkpoint}).")
+
+            if os.path.isfile(os.path.join(resume_from_checkpoint, "config.json")):
+                config = PretrainedConfig.from_json_file(os.path.join(resume_from_checkpoint, "config.json"))
+                checkpoint_version = config.transformers_version
+                if checkpoint_version is not None and checkpoint_version != __version__:
+                    logger.warning(
+                        f"You are resuming training from a checkpoint trained with {checkpoint_version} of "
+                        f"Transformers but your current version is {__version__}. This is not recommended and could "
+                        "yield to errors or unwanted behaviors."
+                    )
+
+            if args.deepspeed:
+                # will be resumed in deepspeed_init
+                pass
+            else:
+                # We load the model state dict on the CPU to avoid an OOM error.
+                state_dict = torch.load(os.path.join(resume_from_checkpoint, "pytorch_model.bin"), map_location="cpu")
+                # If the model is on the GPU, it still works!
+                trainer._load_state_dict_in_model(state_dict)
+
+                # release memory
+                del state_dict
+
+def main():
+    os.environ["WANDB_DISABLED"] = "true"
+    # See all possible arguments in src/transformers/training_args.py
+    # or by passing the --help flag to this script.
+    # We now keep distinct sets of args, for a cleaner separation of concerns.
+
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, Seq2SeqTrainingArguments))
+    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
+        # If we pass only one argument to the script and it's the path to a json file,
+        # let's parse it to get our arguments.
+        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+    else:
+        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    # Setup logging
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+    log_level = training_args.get_process_log_level()
+    logger.setLevel(log_level)
+    datasets.utils.logging.set_verbosity(log_level)
+    transformers.utils.logging.set_verbosity(log_level)
+    transformers.utils.logging.enable_default_handler()
+    transformers.utils.logging.enable_explicit_format()
+
+    # Log on each process the small summary:
+    logger.warning(
+        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
+        + f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
+    )
+    logger.info(f"Training/evaluation parameters {training_args}")
+
+    if data_args.source_prefix is None and model_args.model_name_or_path in [
+        "t5-small",
+        "t5-base",
+        "t5-large",
+        "t5-3b",
+        "t5-11b",
+    ]:
+        logger.warning(
+            "You're running a t5 model but didn't provide a source prefix, which is the expected, e.g. with "
+            "`--source_prefix 'summarize: ' `"
+        )
+
+    # Detecting last checkpoint.
+    last_checkpoint = None
+    if os.path.isdir(training_args.output_dir) and not training_args.overwrite_output_dir:
+        last_checkpoint = get_last_checkpoint(training_args.output_dir)
+        if last_checkpoint is None and len(os.listdir(training_args.output_dir)) > 2:
+            raise ValueError(
+                f"Output directory ({training_args.output_dir}) already exists and is not empty. "
+                "Use --overwrite_output_dir to overcome."
+            )
+        elif last_checkpoint is not None and training_args.resume_from_checkpoint is None:
+            logger.info(
+                f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this behavior, change "
+                "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
+            )
+
+    # Set seed before initializing model.
+    set_seed(training_args.seed)
+
+    # Get the datasets: you can either provide your own CSV/JSON training and evaluation files (see below)
+    # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
+    # (the dataset will be downloaded automatically from the datasets Hub).
+    #
+    # For CSV/JSON files this script will use the first column for the full texts and the second column for the
+    # summaries (unless you specify column names for this with the `text_column` and `summary_column` arguments).
+    #
+    # In distributed training, the load_dataset function guarantee that only one local process can concurrently
+    # download the dataset.
+    if data_args.dataset_name is not None:
+        # Downloading and loading a dataset from the hub.
+        raw_datasets = load_dataset(
+            data_args.dataset_name, data_args.dataset_config_name, cache_dir=model_args.cache_dir
+        )
+    else:
+        data_files = {}
+        if data_args.train_file is not None:
+            data_files["train"] = data_args.train_file
+            extension = data_args.train_file.split(".")[-1]
+        if data_args.validation_file is not None:
+            data_files["validation"] = data_args.validation_file
+            extension = data_args.validation_file.split(".")[-1]
+        if data_args.test_file is not None:
+            data_files["test"] = data_args.test_file
+            extension = data_args.test_file.split(".")[-1]
+        raw_datasets = load_dataset(extension, data_files=data_files, cache_dir=model_args.cache_dir, field='data')
+    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
+    # https://huggingface.co/docs/datasets/loading_datasets.html.
+
+    # Load pretrained model and tokenizer
+    #
+    # Distributed training:
+    # The .from_pretrained methods guarantee that only one local process can concurrently
+    # download model & vocab.
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
+        cache_dir=model_args.cache_dir,
+        use_fast=model_args.use_fast_tokenizer,
+        revision=model_args.model_revision,
+        use_auth_token=True if model_args.use_auth_token else None,
+    )
+
+    if data_args.model_type == "t5":
+        model_init = make_t5
+    elif  data_args.model_type == "double_t5":
+        model_init = make_double_t5
+    elif  data_args.model_type == "masked_t5":
+        model_init = make_masked_t5
+
+    prefix = data_args.source_prefix if data_args.source_prefix is not None else ""
+
+    # Preprocessing the datasets.
+    # We need to tokenize inputs and targets.
+    if training_args.do_train:
+        column_names = raw_datasets["train"].column_names
+    elif training_args.do_eval:
+        column_names = raw_datasets["validation"].column_names
+    elif training_args.do_predict:
+        column_names = raw_datasets["test"].column_names
+    else:
+        logger.info("There is nothing to do. Please pass `do_train`, `do_eval` and/or `do_predict`.")
+        return
+
+    if isinstance(tokenizer, tuple(MULTILINGUAL_TOKENIZERS)):
+        assert (
+            data_args.lang is not None
+        ), f"{tokenizer.__class__.__name__} is a multilingual tokenizer which requires --lang argument"
+
+        tokenizer.src_lang = data_args.lang
+        tokenizer.tgt_lang = data_args.lang
+
+    # Get the column names for input/target.
+    dataset_columns = summarization_name_mapping.get(data_args.dataset_name, None)
+    if data_args.text_column is None:
+        text_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
+    else:
+        text_column = data_args.text_column
+        if text_column not in column_names:
+            raise ValueError(
+                f"--text_column' value '{data_args.text_column}' needs to be one of: {', '.join(column_names)}"
+            )
+    if data_args.summary_column is None:
+        summary_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
+    else:
+        summary_column = data_args.summary_column
+        if summary_column not in column_names:
+            raise ValueError(
+                f"--summary_column' value '{data_args.summary_column}' needs to be one of: {', '.join(column_names)}"
+            )
+
+    # Temporarily set max_target_length for training.
+    max_target_length = data_args.max_target_length
+    padding = "max_length" if data_args.pad_to_max_length else False
+
+    def preprocess_function(examples):
+        # remove pairs where at least one record is None
+
+        inputs, targets = [], []
+        for i in range(len(examples[text_column])):
+            if examples[text_column][i] is not None and examples[summary_column][i] is not None:
+                inputs.append(examples[text_column][i])
+                targets.append(examples[summary_column][i])
+
+        inputs = [prefix + inp for inp in inputs]
+        model_inputs = tokenizer(inputs, max_length=data_args.max_source_length, padding=padding, truncation=True)
+
+        spec_ids = tokenizer.special_tokens_map['additional_special_tokens']
+        spec_ids = [tokenizer(el)['input_ids'][0] for el in spec_ids] 
+        attention_mask_for_decoder = []
+        for i in range(len(inputs)):
+            ids_pos = []
+            mask = []
+            for j, id in enumerate(model_inputs.input_ids[i]):
+                if id in spec_ids:
+                    ids_pos.append(j)
+            
+            if len(ids_pos) < 2:
+                mask = len(model_inputs.input_ids[i]) * [1]
+            else:
+                if len(ids_pos) % 2 != 0:
+                    ids_pos = [0] + ids_pos
+                k = 0
+                prev_id = 0
+                while k < len(ids_pos):
+                    mask += (ids_pos[k] - prev_id) * [0] + (ids_pos[k+1]- ids_pos[k] + 1) * [1]
+                    prev_id = ids_pos[k+1] + 1
+                    k += 2
+                mask += (len(model_inputs.input_ids[i]) - ids_pos[-1] - 1) * [0]
+
+            assert len(mask) == len(model_inputs.input_ids[i])
+            mask += (data_args.max_source_length - len(mask)) * [0]
+            attention_mask_for_decoder.append(mask)
+
+        model_inputs["decoder_input_ids_attention_mask"] = attention_mask_for_decoder
+
+        # Setup the tokenizer for targets
+        with tokenizer.as_target_tokenizer():
+            labels = tokenizer(targets, max_length=max_target_length, padding=padding, truncation=True)
+
+        # If we are padding here, replace all tokenizer.pad_token_id in the labels by -100 when we want to ignore
+        # padding in the loss.
+        if padding == "max_length" and data_args.ignore_pad_token_for_loss:
+            labels["input_ids"] = [
+                [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
+            ]
+
+        model_inputs["labels"] = labels["input_ids"]
+        return model_inputs
+
+    if training_args.do_train:
+        if "train" not in raw_datasets:
+            raise ValueError("--do_train requires a train dataset")
+        train_dataset = raw_datasets["train"]
+        if data_args.max_train_samples is not None:
+            train_dataset = train_dataset.select(range(data_args.max_train_samples))
+        with training_args.main_process_first(desc="train dataset map pre-processing"):
+            train_dataset = train_dataset.map(
+                preprocess_function,
+                batched=True,
+                num_proc=data_args.preprocessing_num_workers,
+                remove_columns=column_names,
+                load_from_cache_file=not data_args.overwrite_cache,
+                desc="Running tokenizer on train dataset",
+            )
+
+    if training_args.do_eval:
+        max_target_length = data_args.val_max_target_length
+        if "validation" not in raw_datasets:
+            raise ValueError("--do_eval requires a validation dataset")
+        eval_dataset = raw_datasets["validation"]
+        if data_args.max_eval_samples is not None:
+            eval_dataset = eval_dataset.select(range(data_args.max_eval_samples))
+        with training_args.main_process_first(desc="validation dataset map pre-processing"):
+            eval_dataset = eval_dataset.map(
+                preprocess_function,
+                batched=True,
+                num_proc=data_args.preprocessing_num_workers,
+                remove_columns=column_names,
+                load_from_cache_file=not data_args.overwrite_cache,
+                desc="Running tokenizer on validation dataset",
+            )
+
+    if training_args.do_predict:
+        max_target_length = data_args.val_max_target_length
+        if "test" not in raw_datasets:
+            raise ValueError("--do_predict requires a test dataset")
+        predict_dataset = raw_datasets["test"]
+        if data_args.max_predict_samples is not None:
+            predict_dataset = predict_dataset.select(range(data_args.max_predict_samples))
+        with training_args.main_process_first(desc="prediction dataset map pre-processing"):
+            predict_dataset = predict_dataset.map(
+                preprocess_function,
+                batched=True,
+                num_proc=data_args.preprocessing_num_workers,
+                remove_columns=column_names,
+                load_from_cache_file=not data_args.overwrite_cache,
+                desc="Running tokenizer on prediction dataset",
+            )
+
+    model = model_init(model_args, data_args, training_args, tokenizer, logger)
+    # Data collator
+    label_pad_token_id = -100 if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer,
+        model=model,
+        label_pad_token_id=label_pad_token_id,
+        pad_to_multiple_of=8 if training_args.fp16 else None,
+    )
+
+    # Metric
+    metrics_list = []
+    if data_args.task_name in {'openentity', 'trex_entity_typing'}:
+        metrics_list.append((load_metric('precision', config_name='multilabel'), 'micro'))
+        metrics_list.append((load_metric('recall', config_name='multilabel'), 'micro'))
+        metrics_list.append((load_metric('f1', config_name='multilabel'), 'micro'))
+    elif  data_args.task_name == 'figer':
+        metrics_list.append((load_metric('./custom_accuracy', config_name='multilabel'), None))
+        metrics_list.append((load_metric('accuracy', config_name='multilabel'), None))
+        metrics_list.append((load_metric('f1', config_name='multilabel'), 'micro'))
+        metrics_list.append((load_metric('f1', config_name='multilabel'), 'macro'))
+    elif data_args.task_name == 'fewrel':
+        metrics_list.append((load_metric('precision'), 'micro'))
+        metrics_list.append((load_metric('precision'), 'macro'))
+        metrics_list.append((load_metric('recall'), 'micro'))
+        metrics_list.append((load_metric('recall'), 'macro'))
+        metrics_list.append((load_metric('f1'), 'micro'))
+        metrics_list.append((load_metric('f1'), 'macro'))
+    elif data_args.task_name == 'tacred':
+        metrics_list.append((load_metric('f1'), 'micro'))
+        metrics_list.append((load_metric('./tacred_precision_micro'), None))
+        metrics_list.append((load_metric('./tacred_recall_micro'), None))
+        metrics_list.append((load_metric('./tacred_f1_micro'), None))
+
+    def postprocess_text(preds, labels):
+        preds = [pred.strip() for pred in preds]
+        labels = [label.strip() for label in labels]
+
+        with open(data_args.labels_file) as f:
+            classes = json.load(f)
+        classes_dict = {cl: i for i, cl in enumerate(classes)}
+
+        preds_num = [classes_dict.get(el, 0) for el in preds]
+        labels_num = [classes_dict.get(el, 0) for el in labels]
+
+        return preds_num, labels_num
+
+    def postprocess_text_multilabel(preds, labels):
+        preds = [pred.strip() for pred in preds]
+        labels = [label.strip() for label in labels]
+
+        with open(data_args.labels_file) as f:
+            classes = json.load(f)
+        classes_dict = {cl: i for i, cl in enumerate(classes)}
+        preds_num = []
+        for el in preds:
+            pn = len(classes) * [0]
+            for x in el.split():
+                if x in classes_dict:
+                    pn[classes_dict[x]] = 1
+            preds_num.append(pn)
+
+        labels_num = []
+        for el in labels:
+            ln = len(classes) * [0]
+            for x in el.split():
+                if x in classes_dict:
+                    ln[classes_dict[x]] = 1
+            labels_num.append(ln)
+
+        return preds_num, labels_num
+        
+    def postprocess_triplets(inputs):
+        inputs_wo_triplets = []
+        len_input = inputs.shape[1]
+        for inp in inputs:
+            i = 0
+            while i < len_input and inp[i] != 32099:
+                i += 1
+            if i != len_input:
+                inputs_wo_triplets.append(np.concatenate([inp[i+1:], np.zeros(i+1, dtype=np.int64)]))
+            else:
+                inputs_wo_triplets.append(inp)
+        return np.stack(inputs_wo_triplets)
+
+    def compute_metrics(eval_preds, use_triplets=False):
+        preds, labels = eval_preds
+        if isinstance(preds, tuple):
+            preds = preds[0]
+        if use_triplets:
+            preds = postprocess_triplets(preds)
+            labels = postprocess_triplets(labels)
+
+        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+        if data_args.ignore_pad_token_for_loss:
+            # Replace -100 in the labels as we can't decode them.
+            labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+        # Some simple post-processing
+        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels) \
+	    if data_args.task_name in {'tacred', 'fewrel'} else postprocess_text_multilabel(decoded_preds, decoded_labels)
+
+        result = {}
+        for metric, average in metrics_list:
+            if average:
+                res = metric.compute(predictions=decoded_preds, references=decoded_labels, average=average)
+            else:
+                res = metric.compute(predictions=decoded_preds, references=decoded_labels)
+            for k in res:
+                result['{}_{}'.format(k, average) if average else k] = res[k]
+
+        return result
+
+    # Initialize our Trainer
+    trainer = Seq2SeqTrainer(
+        # model_init=partial(make_t5, model_args, data_args, training_args, tokenizer, logger),
+        model = model,
+        args=training_args,
+        train_dataset=train_dataset if training_args.do_train else None,
+        eval_dataset=eval_dataset if training_args.do_eval else None,
+        tokenizer=tokenizer,
+        data_collator=data_collator,
+        compute_metrics=partial(compute_metrics, use_triplets=data_args.use_triplets) \
+            if training_args.predict_with_generate else None,
+        callbacks=[LogCallback]
+    )
+
+    checkpoint = None
+    if training_args.resume_from_checkpoint is not None:
+        checkpoint = training_args.resume_from_checkpoint
+    elif last_checkpoint is not None:
+        checkpoint = last_checkpoint
+
+    # Training
+    if training_args.do_train:
+        train_result = trainer.train(resume_from_checkpoint=checkpoint)
+        trainer.save_model()  # Saves the tokenizer too for easy upload
+
+        metrics = train_result.metrics
+        max_train_samples = (
+            data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
+        )
+        metrics["train_samples"] = min(max_train_samples, len(train_dataset))
+
+        trainer.log_metrics("train", metrics)
+        trainer.save_metrics("train", metrics)
+        trainer.save_state()
+    else:
+        load_weights(training_args, trainer, resume_from_checkpoint=checkpoint)
+
+    # Evaluation
+    results = {}
+    max_length = (
+        training_args.generation_max_length
+        if training_args.generation_max_length is not None
+        else data_args.val_max_target_length
+    )
+    num_beams = data_args.num_beams if data_args.num_beams is not None else training_args.generation_num_beams
+    if training_args.do_eval:
+        logger.info("*** Evaluate ***")
+        metrics = trainer.evaluate(max_length=max_length, num_beams=num_beams, metric_key_prefix="eval")
+        max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
+        metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
+
+        trainer.log_metrics("eval", metrics)
+        trainer.save_metrics("eval", metrics)
+
+    if training_args.do_predict:
+        logger.info("*** Predict ***")
+
+        predict_results = trainer.predict(
+            predict_dataset, metric_key_prefix="predict", max_length=max_length, num_beams=num_beams
+        )
+        metrics = predict_results.metrics
+        max_predict_samples = (
+            data_args.max_predict_samples if data_args.max_predict_samples is not None else len(predict_dataset)
+        )
+        metrics["predict_samples"] = min(max_predict_samples, len(predict_dataset))
+
+        trainer.log_metrics("predict", metrics)
+        trainer.save_metrics("predict", metrics)
+
+        if trainer.is_world_process_zero():
+            if training_args.predict_with_generate:
+                predictions = tokenizer.batch_decode(
+                    predict_results.predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
+                )
+                predictions = [pred.strip() for pred in predictions]
+                output_prediction_file = os.path.join(training_args.output_dir,  data_args.generated_predictions_file)
+                with open(output_prediction_file, "w") as writer:
+                    writer.write("\n".join(predictions))
+
+    kwargs = {"finetuned_from": model_args.model_name_or_path, "tasks": "summarization"}
+    if data_args.dataset_name is not None:
+        kwargs["dataset_tags"] = data_args.dataset_name
+        if data_args.dataset_config_name is not None:
+            kwargs["dataset_args"] = data_args.dataset_config_name
+            kwargs["dataset"] = f"{data_args.dataset_name} {data_args.dataset_config_name}"
+        else:
+            kwargs["dataset"] = data_args.dataset_name
+
+    if data_args.lang is not None:
+        kwargs["language"] = data_args.lang
+
+    if training_args.push_to_hub:
+        trainer.push_to_hub(**kwargs)
+    else:
+        trainer.create_model_card(**kwargs)
+
+    return results
+
+
+def _mp_fn(index):
+    # For xla_spawn (TPUs)
+    main()
+
+
+if __name__ == "__main__":
+    main()

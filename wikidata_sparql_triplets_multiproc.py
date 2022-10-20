@@ -1,0 +1,251 @@
+import os
+import json
+import requests
+import random
+import time
+from argparse import ArgumentParser
+from functools import partial
+from multiprocessing import Process, Pool
+from requests.compat import JSONDecodeError as CompatJSONDecodeError
+from requests.exceptions import ConnectionError
+from multiprocessing.pool import MaybeEncodingError
+
+def get_entities_trex(x):
+    entities_labels = {}
+    if x['subj_label'].startswith('Q'):
+        entities_labels[x['subj_label']] = ' '.join(x['token'][x['subj_start']: x['subj_end']+1])
+    if x['obj_label'].startswith('Q'):    
+        entities_labels[x['obj_label']] = ' '.join(x['token'][x['obj_start']: x['obj_end']+1])
+    return entities_labels
+
+
+def get_entities_tekgen(x):
+    return x['entities']
+
+
+def find_relation(ent1, ent2, bot_id):
+    url = 'https://query.wikidata.org/sparql'
+    query = '''
+    SELECT ?p ?pLabel WHERE {
+       wd:%s ?prop wd:%s .
+       ?p wikibase:directClaim ?prop .
+       SERVICE wikibase:label {
+        bd:serviceParam wikibase:language "en" .
+       }
+    }
+    LIMIT 100''' % (ent1, ent2)
+    try:
+        r = requests.get(url, params = {'format': 'json', 'query': query}, headers = {'User-agent': 'your bot 0.{}'.format(bot_id)})
+    except ConnectionError:
+        with open('log.txt', 'a') as f:
+            f.write('{}, {}, {}'.format('find_relation', 'ConnectionError', -1))
+            f.write('\n')
+        return None
+    except TypeError:
+        with open('log.txt', 'a') as f:
+            f.write('{}, {}, {}'.format('find_relation', 'TypeError', -1))
+            f.write('\n')
+        return None
+
+    while r.status_code == 429:
+        time.sleep(2)
+        try:
+            r = requests.get(url, params = {'format': 'json', 'query': query}, headers = {'User-agent': 'your bot 0.{}'.format(bot_id)})
+        except ConnectionError:
+            with open('log.txt', 'a') as f:
+                f.write('{}, {}, {}'.format('find_relation', 'ConnectionError', -1))
+                f.write('\n')
+            return None
+        except TypeError:
+            with open('log.txt', 'a') as f:
+                f.write('{}, {}, {}'.format('find_relation', 'TypeError', -1))
+                f.write('\n')
+            return None
+
+    try:
+        wdata = r.json()
+        if wdata['results']['bindings']:
+            return wdata['results']['bindings'][0]['pLabel']['value']
+        else:
+            return None
+    except CompatJSONDecodeError:
+        with open('log.txt', 'a') as f:
+            f.write('{}, {}, {}'.format('find_relation', 'CompatJSONDecodeError', r.status_code))
+            f.write('\n')
+        return None
+    except TypeError:
+        with open('log.txt', 'a') as f:
+            f.write('{}, {}, {}'.format('find_relation', 'TypeError', r.status_code))
+            f.write('\n')
+        return None
+
+
+def find_triplets(entities_labels, bot_id):
+    if len(entities_labels) < 2:
+        return []
+
+    triplets = []
+    for ent1 in entities_labels:
+        for ent2 in entities_labels:
+            if ent1 != ent2:
+                rel = find_relation(ent1, ent2, bot_id)
+                if rel:
+                    triplets.append('{}\t{}\t{}'.format(entities_labels[ent1], rel, entities_labels[ent2]))
+    return triplets
+
+
+def find_relation_object(ent, bot_id):
+    url = 'https://query.wikidata.org/sparql'
+    query = '''
+    SELECT ?p ?pLabel ?o ?oLabel WHERE {
+        wd:%s ?prop ?o .
+        ?p wikibase:directClaim ?prop .
+        SERVICE wikibase:label {
+            bd:serviceParam wikibase:language "en" .
+        }
+    }
+    LIMIT 100''' % (ent,)
+    try:
+        r = requests.get(url, params = {'format': 'json', 'query': query}, headers = {'User-agent': 'your bot 0.{}'.format(bot_id)})
+    except ConnectionError:
+        with open('log.txt', 'a') as f:
+            f.write('{}, {}, {}'.format('find_relation_object', 'ConnectionError', -1))
+            f.write('\n')
+        return None
+    except TypeError:
+        with open('log.txt', 'a') as f:
+            f.write('{}, {}, {}'.format('find_relation_object', 'TypeError', -1))
+            f.write('\n')
+        return None
+     
+    while r.status_code == 429:
+        time.sleep(2)
+        try:
+            r = requests.get(url, params = {'format': 'json', 'query': query}, headers = {'User-agent': 'your bot 0.{}'.format(bot_id)})
+        except ConnectionError:
+            with open('log.txt', 'a') as f:
+                f.write('{}, {}, {}'.format('find_relation_object', 'ConnectionError', -1))
+                f.write('\n')
+            return None
+        except TypeError:
+            with open('log.txt', 'a') as f:
+                f.write('{}, {}, {}'.format('find_relation_object', 'TypeError', -1))
+                f.write('\n')
+            return None
+
+    try:
+        wdata = r.json()
+        po = []
+        if wdata['results']['bindings']:
+            for el in wdata['results']['bindings']:
+                if 'xml:lang' in el['oLabel'] and el['oLabel']['xml:lang'] == 'en' and not el['oLabel']['value'].startswith('Category:'):
+                    po.append([el['pLabel']['value'], el['oLabel']['value']])
+            return po
+        else:
+            return None
+    except CompatJSONDecodeError:
+        with open('log.txt', 'a') as f:
+            f.write('{}, {}, {}'.format('find_relation_object', 'CompatJSONDecodeError', r.status_code))
+            f.write('\n')
+        return None
+    except TypeError:
+        with open('log.txt', 'a') as f:
+            f.write('{}, {}, {}'.format('find_relation_object', 'TypeError', r.status_code))
+            f.write('\n')
+        return None
+
+
+def find_single_triplets(entities_labels, bot_id):
+    triplets = []
+    for ent in entities_labels:
+            ros = find_relation_object(ent, bot_id)
+            if ros:
+                for ro in ros: 
+                    triplets.append('{}\t{}\t{}'.format(entities_labels[ent], *ro))
+    return triplets
+
+
+def get_triplets_for_dataset(rank, num_workers, args, set_name, bot_id):
+    bot_id = rank + bot_id
+    triplet_func = partial(find_triplets, bot_id=bot_id) if args.find_paired_triplets else partial(find_single_triplets, bot_id=bot_id)
+    entity_func = None
+    if args.dataset_name == 'trex':
+        entity_func = get_entities_trex
+    elif args.dataset_name == 'tekgen':
+        entity_func = get_entities_tekgen
+
+    if args.dataset_name == 'trex':
+        with open(os.path.join(args.data_dir, '{}_{}.json'.format(set_name, rank))) as f:
+            data = json.load(f)
+    elif args.dataset_name == 'tekgen':
+        data = []
+        set_name = 'validation' if set_name == 'dev' else set_name
+        with open(os.path.join(args.data_dir, 'quadruples-{}_{}.json'.format(set_name, rank))) as f:
+            data = json.load(f)
+
+    count = 0
+    count_num = 0
+    triplets = []
+    shard_size = int(len(data) / num_workers) + 1
+    for i, el in enumerate(data, start=rank*shard_size):
+        entities_labels = entity_func(el)
+        t = triplet_func(entities_labels)
+        if t:
+            print(i, t)
+            triplets.append((i, t))
+            count += 1
+            count_num += len(t)
+        if i % 100 == 0:
+            with open(os.path.join(args.output_dir, '{}_{}_{}.json'.format(args.dataset_name, set_name, rank)), 'a') as f:
+                for el in triplets:
+                    f.write(json.dumps(el))
+                    f.write('\n')
+            del triplets
+            triplets = []
+            print(rank, i)
+    # print(count/len(data))
+    # print(count_num/len(data))
+
+    with open(os.path.join(args.output_dir, '{}_{}_{}.json'.format(args.dataset_name, set_name, rank)), 'a') as f:
+        for el in triplets:
+            f.write(json.dumps(el))
+            f.write('\n')
+    triplets = []
+    return 'Process {} finished.'
+
+
+def main():
+    parser = ArgumentParser()
+
+    parser.add_argument("--dataset_name", default=None, type=str, required=True,
+                        help="The name of the task to train.")
+    parser.add_argument("--data_dir", default=None, type=str, required=True,
+                        help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
+    parser.add_argument("--set_names", default="train,dev,test", type=str, required=False,
+                        help="The name of the task to train.")
+    parser.add_argument("--find_paired_triplets", default=False, type=lambda x: (str(x).lower() == 'true'),
+                        help="Whether to use triplets or not.")
+    parser.add_argument("--output_dir", default=None, type=str, required=True,
+                        help="The output data dir for the dataset in json format.")
+
+    args = parser.parse_args()
+
+    for set_name in args.set_names.split(','):
+        print(set_name, '\n***')
+
+        num_workers = 75
+        bot_id = random.randrange(num_workers*10, num_workers*1000, num_workers)
+
+        get_triplets_for_dataset(rank=0, num_workers=num_workers,
+                    args=args, set_name=set_name, bot_id=bot_id)
+        # f = partial(get_triplets_for_dataset, num_workers=num_workers,
+        #             args=args, set_name=set_name, bot_id=bot_id)
+        # with Pool(num_workers) as p:
+        #     print(p.map(f, list(range(num_workers))))
+        # # p = Pool(num_workers)
+        # # vals = p.imap_unordered(f, list(range(num_workers)))
+        # # for v in vals:
+        # #     print(v)
+
+if __name__ == "__main__":
+    main()    
