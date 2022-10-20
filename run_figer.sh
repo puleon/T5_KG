@@ -1,8 +1,8 @@
 #!/bin/bash
 
-source ~/envs/transformers_new/bin/activate
+#source ~/envs/transformers_new/bin/activate
 
-export CUDA_VISIBLE_DEVICES=4,5
+export CUDA_VISIBLE_DEVICES=0,1
 
 task=figer
 model_dir=./trained_models/t5_${task}_padtomaxlenF_dsp_schedconst

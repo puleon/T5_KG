@@ -1,11 +1,11 @@
 #!/bin/bash
 
-source ~/envs/transformers_new/bin/activate
+#source ~/envs/transformers_new/bin/activate
 
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 task=tacred
-model_dir=./trained_models/t5_trextekgen_pretrain_padtomaxlenF_adaf_TRIPLETS
+model_dir=./trained_models/t5base_trex_pretrain_padtomaxlenF_dsp_shddpsimple_TRIPLETS
 dt=$(date '+%d.%m.%Y_%H.%M.%S')
 
 mkdir $model_dir
@@ -15,7 +15,7 @@ cp ./run_summarization_predict.py $model_dir/run_summarization_predict.py_$dt
 for set in train dev test
 do
 	python ./run_summarization_predict.py \
-			--model_name_or_path t5-small \
+			--model_name_or_path t5-base \
 			--cache_dir ./downloaded_models \
 			--resume_from_checkpoint $model_dir/checkpoint-276810 \
 			--output_dir $model_dir \

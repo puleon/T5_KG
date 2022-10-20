@@ -2,7 +2,7 @@
 
 source ~/envs/transformers_new/bin/activate
 
-export CUDA_VISIBLE_DEVICES=4,5,6,7
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 task=tacred
 model_dir=./trained_models/t5base_${task}_padtomaxlenF_adaf_ep3
@@ -53,7 +53,7 @@ python ./run_summarization_finetune.py \
                 --test_file ./data/${task}_json/test.json
                 
 
-
+# --lr_scheduler_type constant \
 # --max_predict_samples 512
 # --eval_steps 500 \
 # --save_steps 500 \
